@@ -7,7 +7,7 @@
 - 多行文字輸入，一行一筆影片資料
 - 支援平台、連結、片名、季數、集數與備註混合輸入
 - 無 API Key 時可用規則解析
-- 有 OpenAI API Key 時可啟用 AI 解析
+- 有 OpenAI 或 Gemini API Key 時可啟用 AI 解析
 - 自動排序、缺集偵測、重複提醒
 - 可編輯觀看狀態
 - 產生簡易觀看計畫
@@ -51,6 +51,15 @@ pip install -r requirements.txt
 ```bash
 streamlit run app.py
 ```
+
+## AI 模式
+
+側邊欄可選擇 AI 供應商：
+
+- OpenAI：支援 `gpt-4.1-mini`、`gpt-4o-mini`
+- Gemini：支援 `gemini-2.5-flash`、`gemini-2.5-pro`、`gemini-1.5-flash`
+
+API Key 由使用者在網頁中輸入，不需要寫進程式碼或 GitHub。
 
 ## 設計說明
 

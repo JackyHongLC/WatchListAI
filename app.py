@@ -16,6 +16,11 @@ try:
 except ImportError:  # The app still works in rule-based mode.
     OpenAI = None
 
+try:
+    from google import genai
+except ImportError:  # Gemini support is optional.
+    genai = None
+
 
 STATUS_OPTIONS = ["未看", "觀看中", "已看", "暫停", "棄追", "想重看"]
 PLATFORM_PATTERNS = {
@@ -218,12 +223,7 @@ def parse_rule_based(raw_text: str) -> List[WatchItem]:
     return items
 
 
-def parse_with_ai(raw_text: str, api_key: str, model: str) -> List[WatchItem]:
-    if OpenAI is None:
-        raise RuntimeError("尚未安裝 openai 套件，請先執行 pip install -r requirements.txt")
-
-    client = OpenAI(api_key=api_key)
-    prompt = """
+AI_PARSE_PROMPT = """
 你是跨平台播放清單整理助理。請根據使用者提供的每一行資料解析影片清單。
 重點限制：
 - 不要假裝你能觀看影片內容。
@@ -236,16 +236,20 @@ def parse_with_ai(raw_text: str, api_key: str, model: str) -> List[WatchItem]:
 只輸出 JSON array，每個物件包含：
 platform, series, season, episode, title, url, category, status, note, source_line, inferred
 """
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": raw_text},
-        ],
-        temperature=0.2,
-    )
-    content = response.choices[0].message.content or "[]"
-    data = json.loads(content.strip().removeprefix("```json").removesuffix("```").strip())
+
+
+def extract_json_array(content: str) -> List[Dict]:
+    text = content.strip()
+    text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+    text = re.sub(r"```$", "", text).strip()
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end < start:
+        raise ValueError("AI 回傳內容不是 JSON array")
+    return json.loads(text[start : end + 1])
+
+
+def rows_to_watch_items(data: List[Dict]) -> List[WatchItem]:
     return [
         WatchItem(
             platform=row.get("platform") or "自訂",
@@ -262,6 +266,42 @@ platform, series, season, episode, title, url, category, status, note, source_li
         )
         for row in data
     ]
+
+
+def parse_with_openai(raw_text: str, api_key: str, model: str) -> List[WatchItem]:
+    if OpenAI is None:
+        raise RuntimeError("尚未安裝 openai 套件，請先執行 pip install -r requirements.txt")
+
+    client = OpenAI(api_key=api_key)
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": AI_PARSE_PROMPT},
+            {"role": "user", "content": raw_text},
+        ],
+        temperature=0.2,
+    )
+    content = response.choices[0].message.content or "[]"
+    return rows_to_watch_items(extract_json_array(content))
+
+
+def parse_with_gemini(raw_text: str, api_key: str, model: str) -> List[WatchItem]:
+    if genai is None:
+        raise RuntimeError("尚未安裝 google-genai 套件，請先執行 pip install -r requirements.txt")
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=f"{AI_PARSE_PROMPT}\n\n使用者資料：\n{raw_text}",
+    )
+    content = getattr(response, "text", "") or "[]"
+    return rows_to_watch_items(extract_json_array(content))
+
+
+def parse_with_ai(raw_text: str, api_key: str, provider: str, model: str) -> List[WatchItem]:
+    if provider == "Gemini":
+        return parse_with_gemini(raw_text, api_key, model)
+    return parse_with_openai(raw_text, api_key, model)
 
 
 def normalize_items(items: List[WatchItem]) -> List[Dict]:
@@ -382,8 +422,14 @@ def main() -> None:
     with st.sidebar:
         st.header("設定")
         use_ai = st.toggle("啟用 AI 解析", value=False)
-        api_key = st.text_input("OpenAI API Key", type="password", disabled=not use_ai)
-        model = st.selectbox("模型", ["gpt-4.1-mini", "gpt-4o-mini"], disabled=not use_ai)
+        provider = st.selectbox("AI 供應商", ["OpenAI", "Gemini"], disabled=not use_ai)
+        model_options = {
+            "OpenAI": ["gpt-4.1-mini", "gpt-4o-mini"],
+            "Gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-1.5-flash"],
+        }
+        api_key_label = f"{provider} API Key"
+        api_key = st.text_input(api_key_label, type="password", disabled=not use_ai)
+        model = st.selectbox("模型", model_options[provider], disabled=not use_ai)
         st.divider()
         show_background_music()
         st.divider()
@@ -418,7 +464,7 @@ Python Machine Learning EP3 Model Training"""
                     st.warning("啟用 AI 解析時需要輸入 API Key。已改用基本規則解析。")
                     items = parse_rule_based(raw_text)
                 else:
-                    items = parse_with_ai(raw_text, api_key, model)
+                    items = parse_with_ai(raw_text, api_key, provider, model)
             else:
                 items = parse_rule_based(raw_text)
             st.session_state.rows = normalize_items(items)
